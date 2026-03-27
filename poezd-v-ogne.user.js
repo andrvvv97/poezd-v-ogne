@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Поезд в огне
 // @namespace    poezd-v-ogne
-// @version      0.1.0
+// @version      0.1.1
 // @description  Подсвечивает имена/организации из локальной базы прямо в полях ввода. Полностью локально.
 // @match        *://*/*
 // @run-at       document-idle
@@ -482,8 +482,62 @@
       root: null,
       mirror: null,
       active: true,
-      ro: null
+      ro: null,
+      lastMatches: []
     };
+
+    let caretMirror = null;
+    let caretSpan = null;
+
+    function ensureCaretMirror() {
+      if (caretMirror) return;
+      caretMirror = document.createElement("div");
+      caretMirror.style.position = "absolute";
+      caretMirror.style.visibility = "hidden";
+      caretMirror.style.whiteSpace = "pre-wrap";
+      caretMirror.style.wordWrap = "break-word";
+      caretMirror.style.left = "-99999px";
+      caretMirror.style.top = "0";
+      caretMirror.style.pointerEvents = "none";
+      caretMirror.style.overflow = "hidden";
+      caretSpan = document.createElement("span");
+      document.documentElement.appendChild(caretMirror);
+    }
+
+    function getCaretClientPoint(pos) {
+      try {
+        ensureCaretMirror();
+        const cs = getComputedStyle(state.el);
+        const rect = state.el.getBoundingClientRect();
+
+        caretMirror.style.width = rect.width + "px";
+        caretMirror.style.font = cs.font;
+        caretMirror.style.letterSpacing = cs.letterSpacing;
+        caretMirror.style.textTransform = cs.textTransform;
+        caretMirror.style.textIndent = cs.textIndent;
+        caretMirror.style.padding = cs.padding;
+        caretMirror.style.boxSizing = cs.boxSizing;
+        caretMirror.style.lineHeight = cs.lineHeight;
+        caretMirror.style.border = cs.border;
+
+        const value = state.el.value || "";
+        const before = value.slice(0, pos);
+        const after = value.slice(pos);
+        // Use text nodes to avoid HTML parsing issues.
+        caretMirror.textContent = "";
+        caretMirror.appendChild(document.createTextNode(before));
+        caretSpan.textContent = after.length ? after[0] : ".";
+        caretMirror.appendChild(caretSpan);
+
+        const spanRect = caretSpan.getBoundingClientRect();
+        const x = rect.left + (spanRect.left - caretMirror.getBoundingClientRect().left) - state.el.scrollLeft;
+        const y = rect.top + (spanRect.top - caretMirror.getBoundingClientRect().top) - state.el.scrollTop;
+        return { x: x + 1, y: y + 18 };
+      } catch {
+        const r = state.el.getBoundingClientRect();
+        return { x: r.left + 12, y: r.top + 12 };
+      }
+    }
 
     function sync() {
       if (!state.root) return;
@@ -544,6 +598,26 @@
       if (state.root) state.root.remove();
       state.root = null;
       state.mirror = null;
+      state.lastMatches = [];
+
+      if (caretMirror) {
+        try { caretMirror.remove(); } catch {}
+        caretMirror = null;
+        caretSpan = null;
+      }
+    }
+
+    function updateTooltipFromCaret() {
+      try {
+        const pos = typeof state.el.selectionStart === "number" ? state.el.selectionStart : -1;
+        if (pos < 0 || !state.lastMatches.length) return tooltip.hide();
+        const hit = state.lastMatches.find((m) => pos >= m.start && pos <= m.end);
+        if (!hit) return tooltip.hide();
+        const pt = getCaretClientPoint(pos);
+        tooltip.show(pt.x, pt.y, entityTooltipHtml(hit.entity, hit.matchedText));
+      } catch {
+        tooltip.hide();
+      }
     }
 
     function render() {
@@ -553,6 +627,7 @@
       const value = state.el.value || "";
       const { normalized, map } = normalizeWithMap(value);
       const matches = matcher.findAll(normalized, map);
+      state.lastMatches = matches;
 
       if (!matches.length) {
         state.mirror.textContent = value;
@@ -572,6 +647,7 @@
       }
       if (pos < value.length) html += escapeHtml(value.slice(pos));
       state.mirror.innerHTML = html;
+      updateTooltipFromCaret();
     }
 
     const debouncedRender = debounce(render, 120);
@@ -583,11 +659,15 @@
     function destroy() {
       state.active = false;
       state.el.removeEventListener("input", onInput);
+      state.el.removeEventListener("click", updateTooltipFromCaret);
+      state.el.removeEventListener("keyup", updateTooltipFromCaret);
       restore();
       tooltip.hide();
     }
 
     state.el.addEventListener("input", onInput);
+    state.el.addEventListener("click", updateTooltipFromCaret);
+    state.el.addEventListener("keyup", updateTooltipFromCaret);
 
     return Object.freeze({ render, destroy });
   }
