@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Поезд в огне
 // @namespace    poezd-v-ogne
-// @version      0.1.6
+// @version      0.1.7
 // @description  Подсвечивает имена/организации из локальной базы прямо в полях ввода. Полностью локально.
 // @match        *://*/*
 // @run-at       document-idle
@@ -29,7 +29,7 @@
     schemaVersion: "poezd.schemaVersion"
   });
 
-  const SCHEMA_VERSION = 4;
+  const SCHEMA_VERSION = 5;
 
   const CATEGORIES = Object.freeze({
     foreign_agent: "foreign_agent",
@@ -173,6 +173,28 @@
     return `rgba(${r},${g},${b},${alpha})`;
   }
 
+  function uniqCategoriesFromEntities(entities) {
+    const order = [
+      CATEGORIES.foreign_agent,
+      CATEGORIES.extremist,
+      CATEGORIES.undesirable_org
+    ];
+    const set = new Set();
+    for (const e of Array.isArray(entities) ? entities : []) {
+      if (e && e.category) set.add(e.category);
+    }
+    return order.filter((c) => set.has(c));
+  }
+
+  function underlineShadows(colors) {
+    const cols = Array.isArray(colors) ? colors.filter(Boolean) : [];
+    if (!cols.length) return "inset 0 -2px 0 #ff3b30";
+    const thickness = 2;
+    return cols
+      .map((c, i) => `inset 0 -${(i + 1) * thickness}px 0 ${c}`)
+      .join(", ");
+  }
+
   function isWordChar(ch) {
     if (!ch) return false;
     return /[\p{L}\p{N}_]/u.test(ch);
@@ -285,7 +307,8 @@
           res.push({
             start: oStart,
             end: oEnd,
-            entity: p.entity,
+            key: p.norm,
+            entities: p.entities,
             matchedText: p.original
           });
         }
@@ -295,13 +318,24 @@
       const accepted = [];
       for (const r of res) {
         let overlaps = false;
+        let merged = false;
         for (const a of accepted) {
+          if (r.start === a.start && r.end === a.end) {
+            const byId = new Set((a.entities || []).map((e) => e && e.id));
+            for (const e of r.entities || []) {
+              if (!e || byId.has(e.id)) continue;
+              byId.add(e.id);
+              a.entities.push(e);
+            }
+            merged = true;
+            break;
+          }
           if (!(r.end <= a.start || r.start >= a.end)) {
             overlaps = true;
             break;
           }
         }
-        if (!overlaps) accepted.push(r);
+        if (!merged && !overlaps) accepted.push(r);
       }
       accepted.sort((a, b) => a.start - b.start);
       return accepted;
@@ -340,6 +374,7 @@
   }
 
   function mergeCategory(existing, records, categoryValue) {
+    // Key by (primaryName, category) so the same name can exist in multiple lists.
     const map = new Map();
     const out = [];
 
@@ -347,7 +382,7 @@
       const s = sanitizeEntity(ent);
       if (!s) continue;
       out.push(s);
-      map.set(normalizeKey(s.primaryName), out.length - 1);
+      map.set(normalizeKey(s.primaryName) + "::" + s.category, out.length - 1);
     }
 
     for (const r of records) {
@@ -355,11 +390,12 @@
       if (!primaryName) continue;
       const k = normalizeKey(primaryName);
       if (!k) continue;
+      const fullKey = k + "::" + categoryValue;
       const aliasesArr = Array.isArray(r.aliases) ? r.aliases : [];
       const notesStr = String(r.notes || "");
 
-      if (map.has(k)) {
-        const idx = map.get(k);
+      if (map.has(fullKey)) {
+        const idx = map.get(fullKey);
         const cur = out[idx];
         const mergedAliases = cur.aliases
           .concat(aliasesArr)
@@ -390,7 +426,7 @@
           notes: notesStr
         });
         if (ent) {
-          map.set(k, out.length);
+          map.set(fullKey, out.length);
           out.push(ent);
         }
       }
@@ -399,26 +435,49 @@
     return out.filter(Boolean);
   }
 
-  function buildPatterns(entities) {
-    const patterns = [];
-    const seen = new Set();
+  function buildPatternBundle(entities) {
+    const byNorm = new Map(); // norm -> { norm, original, entities: [] }
+    const entitiesByKey = new Map(); // norm -> entities[]
+
     for (const e of entities) {
       const all = [e.primaryName, ...(e.aliases || [])];
       for (const name of all) {
         const raw = String(name || "").trim();
         if (!raw) continue;
 
-        const variants = [raw, stripWrappingQuotesOnce(raw), ...extractParenthesesVariants(raw)];
+        const variants = [
+          raw,
+          stripWrappingQuotesOnce(raw),
+          ...extractParenthesesVariants(raw)
+        ];
         for (const v of variants) {
           const key = normalizeKey(v);
-          if (!key || seen.has(key)) continue;
-          seen.add(key);
-          patterns.push({ norm: key, original: v.trim(), entity: e });
+          if (!key) continue;
+          let p = byNorm.get(key);
+          if (!p) {
+            p = { norm: key, original: v.trim(), entities: [] };
+            byNorm.set(key, p);
+          }
+          p.entities.push(e);
         }
       }
     }
+
+    const patterns = Array.from(byNorm.values());
+    for (const p of patterns) {
+      const seenId = new Set();
+      const uniq = [];
+      for (const e of p.entities) {
+        if (!e || seenId.has(e.id)) continue;
+        seenId.add(e.id);
+        uniq.push(e);
+      }
+      p.entities = uniq;
+      entitiesByKey.set(p.norm, uniq);
+    }
+
     patterns.sort((a, b) => b.norm.length - a.norm.length);
-    return patterns;
+    return Object.freeze({ patterns, entitiesByKey });
   }
 
   // -----------------------------
@@ -462,9 +521,27 @@
     return Object.freeze({ show, hide });
   })();
 
-  function entityTooltipHtml(entity) {
-    const cat = CATEGORY_LABELS_RU[entity.category] || entity.category;
-    return `<div><b>${escapeHtml(cat)}:</b> ${escapeHtml(entity.primaryName)}</div>`;
+  function tooltipHtmlForEntities(entities) {
+    const order = [
+      CATEGORIES.foreign_agent,
+      CATEGORIES.extremist,
+      CATEGORIES.undesirable_org
+    ];
+    const lines = [];
+    const seen = new Set();
+    for (const cat of order) {
+      for (const e of Array.isArray(entities) ? entities : []) {
+        if (!e || e.category !== cat) continue;
+        const key = `${cat}::${e.primaryName}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const label = CATEGORY_LABELS_RU[cat] || cat;
+        lines.push(
+          `<div><b>${escapeHtml(label)}:</b> ${escapeHtml(e.primaryName)}</div>`
+        );
+      }
+    }
+    return lines.join("");
   }
 
   function debounce(fn, ms) {
@@ -632,7 +709,7 @@
         const hit = state.lastMatches.find((m) => pos >= m.start && pos <= m.end);
         if (!hit) return tooltip.hide();
         const pt = getCaretClientPoint(pos);
-        tooltip.show(pt.x, pt.y, entityTooltipHtml(hit.entity));
+        tooltip.show(pt.x, pt.y, tooltipHtmlForEntities(hit.entities));
       } catch {
         tooltip.hide();
       }
@@ -657,16 +734,17 @@
       let pos = 0;
       for (const m of matches) {
         if (m.start > pos) html += escapeHtml(value.slice(pos, m.start));
-        const color = CATEGORY_COLORS[m.entity.category] || "#ff3b30";
-        const bg = hexToRgba(color, 0.14);
+        const categories = uniqCategoriesFromEntities(m.entities);
+        const colors = categories.map((c) => CATEGORY_COLORS[c] || "#ff3b30");
+        const bg = colors[0]
+          ? hexToRgba(colors[0], 0.14)
+          : hexToRgba("#ff3b30", 0.14);
+        const shadow = underlineShadows(colors);
         const seg = value.slice(m.start, m.end);
-        // Use underline only to avoid covering the native caret (overlay is above the control).
-        // Add subtle fill as well (semi-transparent) — still keeps text/caret visible.
-        html += `<span data-poezd-hit=\"1\" data-poezd-id=\"${escapeHtml(
-          m.entity.id
-        )}\" style=\"background:${bg}; border-radius:3px; text-decoration: underline; text-decoration-color: ${color}; text-decoration-thickness: 2px; text-underline-offset: 2px; text-decoration-skip-ink: none;\">${escapeHtml(
-          seg
-        )}</span>`;
+        // Multiple underlines are implemented as stacked inset shadows.
+        html += `<span data-poezd-hit=\"1\" data-poezd-key=\"${escapeHtml(
+          m.key
+        )}\" style=\"background:${bg}; border-radius:3px; box-shadow:${shadow};\">${escapeHtml(seg)}</span>`;
         pos = m.end;
       }
       if (pos < value.length) html += escapeHtml(value.slice(pos));
@@ -710,14 +788,16 @@
       let pos = 0;
       for (const m of matches) {
         if (m.start > pos) html += escapeHtml(text.slice(pos, m.start));
-        const color = CATEGORY_COLORS[m.entity.category] || "#ff3b30";
-        const bg = hexToRgba(color, 0.14);
+        const categories = uniqCategoriesFromEntities(m.entities);
+        const colors = categories.map((c) => CATEGORY_COLORS[c] || "#ff3b30");
+        const bg = colors[0]
+          ? hexToRgba(colors[0], 0.14)
+          : hexToRgba("#ff3b30", 0.14);
+        const shadow = underlineShadows(colors);
         const seg = text.slice(m.start, m.end);
-        html += `<span data-poezd-hit=\"1\" data-poezd-id=\"${escapeHtml(
-          m.entity.id
-        )}\" style=\"background:${bg}; border-radius:3px; text-decoration: underline; text-decoration-color: ${color}; text-decoration-thickness: 2px; text-underline-offset: 2px; text-decoration-skip-ink: none;\">${escapeHtml(
-          seg
-        )}</span>`;
+        html += `<span data-poezd-hit=\"1\" data-poezd-key=\"${escapeHtml(
+          m.key
+        )}\" style=\"background:${bg}; border-radius:3px; box-shadow:${shadow};\">${escapeHtml(seg)}</span>`;
         pos = m.end;
       }
       if (pos < text.length) html += escapeHtml(text.slice(pos));
@@ -737,10 +817,10 @@
     function onMouseOver(ev) {
       const node = ev.target && ev.target.closest ? ev.target.closest("[data-poezd-hit]") : null;
       if (!node) return;
-      const id = node.getAttribute("data-poezd-id") || "";
-      const entity = currentEntitiesById.get(id);
-      if (!entity) return;
-      tooltip.show(ev.clientX, ev.clientY, entityTooltipHtml(entity));
+      const key = node.getAttribute("data-poezd-key") || "";
+      const ents = currentEntitiesByKey.get(key);
+      if (!ents || !ents.length) return;
+      tooltip.show(ev.clientX, ev.clientY, tooltipHtmlForEntities(ents));
     }
 
     function onMouseOut() {
@@ -870,7 +950,7 @@
   // Runtime wiring
   // -----------------------------
   let currentMatcher = null;
-  let currentEntitiesById = new Map();
+  let currentEntitiesByKey = new Map();
   let rebuildTimer = null;
 
   function scheduleRebuildMatcher() {
@@ -885,13 +965,13 @@
     const enabled = await getEnabled();
     if (!enabled) {
       currentMatcher = null;
-      currentEntitiesById = new Map();
+      currentEntitiesByKey = new Map();
       return;
     }
     const entities = (await getEntities()).map(sanitizeEntity).filter(Boolean);
-    currentEntitiesById = new Map(entities.map((e) => [e.id, e]));
-    const patterns = buildPatterns(entities);
-    currentMatcher = buildAhoCorasick(patterns);
+    const bundle = buildPatternBundle(entities);
+    currentEntitiesByKey = bundle.entitiesByKey;
+    currentMatcher = buildAhoCorasick(bundle.patterns);
   }
 
   const active = new Map();
