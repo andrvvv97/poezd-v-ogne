@@ -5,6 +5,8 @@
 // @description  Подсвечивает имена/организации из локальной базы прямо в полях ввода. Полностью локально.
 // @match        *://*/*
 // @run-at       document-idle
+// @downloadURL  https://raw.githubusercontent.com/andrww97/poezd-v-ogne/main/poezd-v-ogne.user.js
+// @updateURL    https://raw.githubusercontent.com/andrww97/poezd-v-ogne/main/poezd-v-ogne.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -480,9 +482,6 @@
       root: null,
       mirror: null,
       active: true,
-      baseBg: "",
-      baseColor: "",
-      baseCaret: "",
       ro: null
     };
 
@@ -500,7 +499,6 @@
       state.mirror.style.textTransform = cs.textTransform;
       state.mirror.style.textIndent = cs.textIndent;
       state.mirror.style.padding = cs.padding;
-      state.mirror.style.border = cs.border;
       state.mirror.style.boxSizing = cs.boxSizing;
       state.mirror.style.lineHeight = cs.lineHeight;
 
@@ -528,13 +526,6 @@
 
       document.documentElement.appendChild(state.root);
 
-      state.baseBg = state.el.style.backgroundColor || "";
-      state.baseColor = state.el.style.color || "";
-      state.baseCaret = state.el.style.caretColor || "";
-
-      state.el.style.backgroundColor = "transparent";
-      if (!state.el.style.caretColor) state.el.style.caretColor = "auto";
-
       state.ro = new ResizeObserver(() => sync());
       state.ro.observe(state.el);
       window.addEventListener("scroll", sync, true);
@@ -553,10 +544,6 @@
       if (state.root) state.root.remove();
       state.root = null;
       state.mirror = null;
-
-      state.el.style.backgroundColor = state.baseBg;
-      state.el.style.color = state.baseColor;
-      state.el.style.caretColor = state.baseCaret;
     }
 
     function render() {
@@ -579,7 +566,8 @@
         if (m.start > pos) html += escapeHtml(value.slice(pos, m.start));
         const color = CATEGORY_COLORS[m.entity.category] || "#ff3b30";
         const seg = value.slice(m.start, m.end);
-        html += `<span data-poezd-hit=\"1\" data-poezd-id=\"${escapeHtml(m.entity.id)}\" style=\"background:${color}33;outline:2px solid ${color};border-radius:4px;\">${escapeHtml(seg)}</span>`;
+        // Use underline only to avoid covering the native caret (overlay is above the control).
+        html += `<span data-poezd-hit=\"1\" data-poezd-id=\"${escapeHtml(m.entity.id)}\" style=\"text-decoration: underline; text-decoration-color: ${color}; text-decoration-thickness: 2px; text-underline-offset: 2px; text-decoration-skip-ink: none;\">${escapeHtml(seg)}</span>`;
         pos = m.end;
       }
       if (pos < value.length) html += escapeHtml(value.slice(pos));
@@ -620,7 +608,11 @@
         if (m.start > pos) html += escapeHtml(text.slice(pos, m.start));
         const color = CATEGORY_COLORS[m.entity.category] || "#ff3b30";
         const seg = text.slice(m.start, m.end);
-        html += `<span data-poezd-hit=\"1\" data-poezd-id=\"${escapeHtml(m.entity.id)}\" style=\"background:${color}33;outline:2px solid ${color};border-radius:4px;\">${escapeHtml(seg)}</span>`;
+        html += `<span data-poezd-hit=\"1\" data-poezd-id=\"${escapeHtml(
+          m.entity.id
+        )}\" style=\"text-decoration: underline; text-decoration-color: ${color}; text-decoration-thickness: 2px; text-underline-offset: 2px; text-decoration-skip-ink: none;\">${escapeHtml(
+          seg
+        )}</span>`;
         pos = m.end;
       }
       if (pos < text.length) html += escapeHtml(text.slice(pos));
