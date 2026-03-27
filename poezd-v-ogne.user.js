@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Поезд в огне
 // @namespace    poezd-v-ogne
-// @version      0.1.5
+// @version      0.1.6
 // @description  Подсвечивает имена/организации из локальной базы прямо в полях ввода. Полностью локально.
 // @match        *://*/*
 // @run-at       document-idle
@@ -29,7 +29,7 @@
     schemaVersion: "poezd.schemaVersion"
   });
 
-  const SCHEMA_VERSION = 3;
+  const SCHEMA_VERSION = 4;
 
   const CATEGORIES = Object.freeze({
     foreign_agent: "foreign_agent",
@@ -44,9 +44,9 @@
   });
 
   const CATEGORY_COLORS = Object.freeze({
-    [CATEGORIES.foreign_agent]: "#ff3b30",
-    [CATEGORIES.extremist]: "#ff9500",
-    [CATEGORIES.undesirable_org]: "#af52de"
+    [CATEGORIES.foreign_agent]: "#34c759",
+    [CATEGORIES.extremist]: "#ff3b30",
+    [CATEGORIES.undesirable_org]: "#ffcc00"
   });
 
   function uuid() {
