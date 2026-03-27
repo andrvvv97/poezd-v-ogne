@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Поезд в огне
 // @namespace    poezd-v-ogne
-// @version      0.1.2
+// @version      0.1.3
 // @description  Подсвечивает имена/организации из локальной базы прямо в полях ввода. Полностью локально.
 // @match        *://*/*
 // @run-at       document-idle
@@ -462,13 +462,9 @@
     return Object.freeze({ show, hide });
   })();
 
-  function entityTooltipHtml(entity, matchedText) {
+  function entityTooltipHtml(entity) {
     const cat = CATEGORY_LABELS_RU[entity.category] || entity.category;
-    const aliases = (entity.aliases || []).filter((a) => normalizeKey(a) !== normalizeKey(entity.primaryName));
-    const aliasPart = aliases.length ? ` (${escapeHtml(aliases.slice(0, 5).join(", "))}${aliases.length > 5 ? "…" : ""})` : "";
-    const matchedPart = matchedText ? `<div style=\"opacity:.85;margin-top:6px\">Совпало: <b>${escapeHtml(matchedText)}</b></div>` : "";
-    const notesPart = entity.notes ? `<div style=\"opacity:.85;margin-top:6px\">Заметки: ${escapeHtml(entity.notes)}</div>` : "";
-    return `<div><b>${escapeHtml(cat)}:</b> ${escapeHtml(entity.primaryName)}${aliasPart}${matchedPart}${notesPart}</div>`;
+    return `<div><b>${escapeHtml(cat)}:</b> ${escapeHtml(entity.primaryName)}</div>`;
   }
 
   function debounce(fn, ms) {
@@ -636,7 +632,7 @@
         const hit = state.lastMatches.find((m) => pos >= m.start && pos <= m.end);
         if (!hit) return tooltip.hide();
         const pt = getCaretClientPoint(pos);
-        tooltip.show(pt.x, pt.y, entityTooltipHtml(hit.entity, hit.matchedText));
+        tooltip.show(pt.x, pt.y, entityTooltipHtml(hit.entity));
       } catch {
         tooltip.hide();
       }
