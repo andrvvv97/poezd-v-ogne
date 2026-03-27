@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Поезд в огне
 // @namespace    poezd-v-ogne
-// @version      0.1.1
+// @version      0.1.2
 // @description  Подсвечивает имена/организации из локальной базы прямо в полях ввода. Полностью локально.
 // @match        *://*/*
 // @run-at       document-idle
@@ -29,7 +29,7 @@
     schemaVersion: "poezd.schemaVersion"
   });
 
-  const SCHEMA_VERSION = 1;
+  const SCHEMA_VERSION = 2;
 
   const CATEGORIES = Object.freeze({
     foreign_agent: "foreign_agent",
@@ -85,21 +85,32 @@
     const ver = await GM_getValue(STORAGE_KEYS.schemaVersion);
     if (ver === SCHEMA_VERSION) return;
     const existing = await getEntities();
-    if (existing.length) {
-      await GM_setValue(STORAGE_KEYS.schemaVersion, SCHEMA_VERSION);
-      return;
+
+    // Seed only if empty.
+    let entities = existing;
+    if (!entities.length) {
+      entities = [
+        {
+          id: "seed-1",
+          category: CATEGORIES.foreign_agent,
+          primaryName: "Иван Алексеев",
+          aliases: ["Noize MC", "Алексеев"],
+          notes: ""
+        }
+      ];
+      await setEntities(entities);
+      await GM_setValue(STORAGE_KEYS.enabled, true);
     }
-    const seed = [
-      {
-        id: "seed-1",
-        category: CATEGORIES.foreign_agent,
-        primaryName: "Иван Алексеев",
-        aliases: ["Noize MC", "Алексеев"],
-        notes: ""
-      }
-    ];
-    await setEntities(seed);
-    await GM_setValue(STORAGE_KEYS.enabled, true);
+
+    // Auto-import bundled datasets on first run / migration.
+    // This keeps existing custom entities and merges bundled ones in.
+    const cleaned = (await getEntities()).map(sanitizeEntity).filter(Boolean);
+    let merged = cleaned;
+    merged = mergeCategory(merged, BUNDLED.inoagents || [], CATEGORIES.foreign_agent);
+    merged = mergeCategory(merged, BUNDLED.extremist_orgs || [], CATEGORIES.extremist);
+    merged = mergeCategory(merged, BUNDLED.undesirable_orgs || [], CATEGORIES.undesirable_org);
+    await setEntities(merged);
+
     await GM_setValue(STORAGE_KEYS.schemaVersion, SCHEMA_VERSION);
   }
 
@@ -149,6 +160,17 @@
       .replace(/>/g, "&gt;")
       .replace(/\"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  function hexToRgba(hex, alpha) {
+    const h = String(hex || "").trim();
+    const m = /^#?([0-9a-f]{6})$/i.exec(h);
+    if (!m) return `rgba(255,59,48,${alpha})`;
+    const int = parseInt(m[1], 16);
+    const r = (int >> 16) & 255;
+    const g = (int >> 8) & 255;
+    const b = int & 255;
+    return `rgba(${r},${g},${b},${alpha})`;
   }
 
   function isWordChar(ch) {
@@ -640,9 +662,15 @@
       for (const m of matches) {
         if (m.start > pos) html += escapeHtml(value.slice(pos, m.start));
         const color = CATEGORY_COLORS[m.entity.category] || "#ff3b30";
+        const bg = hexToRgba(color, 0.14);
         const seg = value.slice(m.start, m.end);
         // Use underline only to avoid covering the native caret (overlay is above the control).
-        html += `<span data-poezd-hit=\"1\" data-poezd-id=\"${escapeHtml(m.entity.id)}\" style=\"text-decoration: underline; text-decoration-color: ${color}; text-decoration-thickness: 2px; text-underline-offset: 2px; text-decoration-skip-ink: none;\">${escapeHtml(seg)}</span>`;
+        // Add subtle fill as well (semi-transparent) — still keeps text/caret visible.
+        html += `<span data-poezd-hit=\"1\" data-poezd-id=\"${escapeHtml(
+          m.entity.id
+        )}\" style=\"background:${bg}; border-radius:3px; text-decoration: underline; text-decoration-color: ${color}; text-decoration-thickness: 2px; text-underline-offset: 2px; text-decoration-skip-ink: none;\">${escapeHtml(
+          seg
+        )}</span>`;
         pos = m.end;
       }
       if (pos < value.length) html += escapeHtml(value.slice(pos));
@@ -687,10 +715,11 @@
       for (const m of matches) {
         if (m.start > pos) html += escapeHtml(text.slice(pos, m.start));
         const color = CATEGORY_COLORS[m.entity.category] || "#ff3b30";
+        const bg = hexToRgba(color, 0.14);
         const seg = text.slice(m.start, m.end);
         html += `<span data-poezd-hit=\"1\" data-poezd-id=\"${escapeHtml(
           m.entity.id
-        )}\" style=\"text-decoration: underline; text-decoration-color: ${color}; text-decoration-thickness: 2px; text-underline-offset: 2px; text-decoration-skip-ink: none;\">${escapeHtml(
+        )}\" style=\"background:${bg}; border-radius:3px; text-decoration: underline; text-decoration-color: ${color}; text-decoration-thickness: 2px; text-underline-offset: 2px; text-decoration-skip-ink: none;\">${escapeHtml(
           seg
         )}</span>`;
         pos = m.end;
