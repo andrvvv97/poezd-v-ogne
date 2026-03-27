@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Поезд в огне
 // @namespace    poezd-v-ogne
-// @version      0.1.4
+// @version      0.1.5
 // @description  Подсвечивает имена/организации из локальной базы прямо в полях ввода. Полностью локально.
 // @match        *://*/*
 // @run-at       document-idle
@@ -29,7 +29,7 @@
     schemaVersion: "poezd.schemaVersion"
   });
 
-  const SCHEMA_VERSION = 2;
+  const SCHEMA_VERSION = 3;
 
   const CATEGORIES = Object.freeze({
     foreign_agent: "foreign_agent",
