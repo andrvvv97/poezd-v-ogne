@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Поезд в огне
 // @namespace    poezd-v-ogne
-// @version      0.2.3
+// @version      0.2.4
 // @description  Подсвечивает имена/организации из локальной базы прямо в полях ввода. Полностью локально.
 // @match        *://*/*
 // @run-at       document-idle
@@ -127,6 +127,11 @@
   // -----------------------------
   function toSafeLowerCase(str) {
     return String(str || "").toLocaleLowerCase("ru-RU");
+  }
+
+  function hasUppercase(str) {
+    // Unicode-aware (works for Cyrillic + Latin).
+    return /\p{Lu}/u.test(String(str || ""));
   }
 
   function stripDiacritics(str) {
@@ -291,7 +296,7 @@
       }
     }
 
-    function findAll(hayNorm, mapToOriginal) {
+    function findAll(hayNorm, mapToOriginal, hayOriginal) {
       const res = [];
       let node = root;
       for (let i = 0; i < hayNorm.length; i++) {
@@ -312,11 +317,29 @@
 
           const oStart = mapToOriginal[start] ?? 0;
           const oEnd = (mapToOriginal[end - 1] ?? 0) + 1;
+          let entities = p.entities;
+
+          // Mitigate "common-word" aliases by respecting case:
+          // if the alias in DB contains uppercase, require at least one uppercase
+          // letter in the typed span; otherwise do not match that alias/entity.
+          if (p.requireUpperIds && p.requireUpperIds.size) {
+            const span = String(hayOriginal || "").slice(oStart, oEnd);
+            if (!hasUppercase(span)) {
+              const filtered = [];
+              for (const e of entities || []) {
+                if (!e) continue;
+                if (p.requireUpperIds.has(e.id)) continue;
+                filtered.push(e);
+              }
+              entities = filtered;
+              if (!entities.length) continue;
+            }
+          }
           res.push({
             start: oStart,
             end: oEnd,
             key: p.norm,
-            entities: p.entities,
+            entities,
             matchedText: p.original
           });
         }
@@ -444,14 +467,26 @@
   }
 
   function buildPatternBundle(entities) {
-    const byNorm = new Map(); // norm -> { norm, original, entities: [] }
+    const byNorm = new Map(); // norm -> { norm, original, entities: [], requireUpperIds: Set<string> }
     const entitiesByKey = new Map(); // norm -> entities[]
 
     for (const e of entities) {
-      const all = [e.primaryName, ...(e.aliases || [])];
-      for (const name of all) {
+      const aliasesArr = e.aliases || [];
+      const all = [e.primaryName, ...aliasesArr];
+      for (let nameIdx = 0; nameIdx < all.length; nameIdx++) {
+        const name = all[nameIdx];
         const raw = String(name || "").trim();
         if (!raw) continue;
+
+        const isAlias = nameIdx > 0;
+        // Only for single-token aliases (no whitespace). This avoids breaking
+        // matching for multi-word aliases like "Noize MC", while preventing
+        // false positives on common words (e.g. "вместе").
+        const aliasWantsCase =
+          isAlias &&
+          !/\s/u.test(raw) &&
+          (e.category === CATEGORIES.foreign_agent || e.category === CATEGORIES.extremist) &&
+          hasUppercase(raw);
 
         const variants = [
           raw,
@@ -463,10 +498,11 @@
           if (!key) continue;
           let p = byNorm.get(key);
           if (!p) {
-            p = { norm: key, original: v.trim(), entities: [] };
+            p = { norm: key, original: v.trim(), entities: [], requireUpperIds: new Set() };
             byNorm.set(key, p);
           }
           p.entities.push(e);
+          if (aliasWantsCase) p.requireUpperIds.add(e.id);
         }
       }
     }
@@ -729,7 +765,7 @@
       sync();
       const value = state.el.value || "";
       const { normalized, map } = normalizeWithMap(value);
-      const matches = matcher.findAll(normalized, map);
+      const matches = matcher.findAll(normalized, map, value);
       state.lastMatches = matches;
 
       if (!matches.length) {
@@ -789,7 +825,7 @@
       if (el.childNodes.length !== 1 || !el.firstChild || el.firstChild.nodeType !== Node.TEXT_NODE) return false;
       const text = el.firstChild.nodeValue || "";
       const { normalized, map } = normalizeWithMap(text);
-      const matches = matcher.findAll(normalized, map);
+      const matches = matcher.findAll(normalized, map, text);
       if (!matches.length) return false;
 
       let html = "";
