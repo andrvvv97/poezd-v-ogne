@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Поезд в огне
 // @namespace    poezd-v-ogne
-// @version      0.2.4
+// @version      0.2.5
 // @description  Подсвечивает имена/организации из локальной базы прямо в полях ввода. Полностью локально.
 // @match        *://*/*
 // @run-at       document-idle
@@ -819,14 +819,149 @@
   }
 
   function createEditableHighlighter(el, matcher) {
-    const state = { el, matcher, active: true };
+    // Safer overlay approach for contenteditable:
+    // - does NOT rewrite DOM (prevents caret jumps / VK editor glitches)
+    // - mirror text is transparent; only background/underlines are visible
+    const state = {
+      el,
+      matcher,
+      root: null,
+      mirror: null,
+      active: true,
+      ro: null,
+      lastMatches: []
+    };
 
-    function tryWrap() {
-      if (el.childNodes.length !== 1 || !el.firstChild || el.firstChild.nodeType !== Node.TEXT_NODE) return false;
-      const text = el.firstChild.nodeValue || "";
+    function getEditableText() {
+      try {
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        // Range#toString reflects visual text better than textContent for many editors.
+        return r.toString().replace(/\u00A0/gu, " ");
+      } catch {
+        return String(el.textContent || "").replace(/\u00A0/gu, " ");
+      }
+    }
+
+    function getCaretOffsetAndPoint() {
+      const sel = document.getSelection();
+      if (!sel || sel.rangeCount === 0) return { offset: -1, x: 0, y: 0 };
+      const range = sel.getRangeAt(0);
+      if (!range || !el.contains(range.endContainer)) return { offset: -1, x: 0, y: 0 };
+
+      let offset = -1;
+      try {
+        const pre = document.createRange();
+        pre.selectNodeContents(el);
+        pre.setEnd(range.endContainer, range.endOffset);
+        offset = pre.toString().replace(/\u00A0/gu, " ").length;
+      } catch {
+        offset = -1;
+      }
+
+      // Position tooltip near caret.
+      try {
+        const r2 = range.cloneRange();
+        r2.collapse(true);
+        const rect = r2.getClientRects()[0] || r2.getBoundingClientRect();
+        if (rect && rect.width + rect.height > 0) return { offset, x: rect.left + 1, y: rect.bottom + 6 };
+      } catch {}
+      const fallback = el.getBoundingClientRect();
+      return { offset, x: fallback.left + 12, y: fallback.top + 12 };
+    }
+
+    function sync() {
+      if (!state.root) return;
+      const r = state.el.getBoundingClientRect();
+      state.root.style.left = r.left + "px";
+      state.root.style.top = r.top + "px";
+      state.root.style.width = r.width + "px";
+      state.root.style.height = r.height + "px";
+
+      const cs = getComputedStyle(state.el);
+      state.mirror.style.font = cs.font;
+      state.mirror.style.letterSpacing = cs.letterSpacing;
+      state.mirror.style.textTransform = cs.textTransform;
+      state.mirror.style.textIndent = cs.textIndent;
+      state.mirror.style.padding = cs.padding;
+      state.mirror.style.boxSizing = cs.boxSizing;
+      state.mirror.style.lineHeight = cs.lineHeight;
+      state.mirror.style.textAlign = cs.textAlign;
+      state.mirror.style.whiteSpace = cs.whiteSpace && cs.whiteSpace !== "normal" ? cs.whiteSpace : "pre-wrap";
+      state.mirror.style.wordBreak = cs.wordBreak || "break-word";
+      state.mirror.style.overflowWrap = cs.overflowWrap || "break-word";
+
+      state.root.scrollTop = state.el.scrollTop;
+      state.root.scrollLeft = state.el.scrollLeft;
+    }
+
+    function ensure() {
+      if (state.root) return;
+      state.root = document.createElement("div");
+      state.root.style.position = "fixed";
+      state.root.style.left = "0";
+      state.root.style.top = "0";
+      state.root.style.zIndex = "2147483646";
+      state.root.style.pointerEvents = "none";
+      state.root.style.overflow = "hidden";
+
+      state.mirror = document.createElement("div");
+      state.mirror.style.color = "transparent";
+      state.mirror.style.userSelect = "none";
+      state.mirror.style.pointerEvents = "none";
+      state.root.appendChild(state.mirror);
+
+      document.documentElement.appendChild(state.root);
+
+      state.ro = new ResizeObserver(() => sync());
+      state.ro.observe(state.el);
+      window.addEventListener("scroll", sync, true);
+      window.addEventListener("resize", sync, true);
+      state.el.addEventListener("scroll", sync, { passive: true });
+    }
+
+    function restore() {
+      if (state.ro) {
+        try { state.ro.disconnect(); } catch {}
+        state.ro = null;
+      }
+      window.removeEventListener("scroll", sync, true);
+      window.removeEventListener("resize", sync, true);
+      try { state.el.removeEventListener("scroll", sync, { passive: true }); } catch {}
+      if (state.root) state.root.remove();
+      state.root = null;
+      state.mirror = null;
+      state.lastMatches = [];
+    }
+
+    function updateTooltipFromCaret() {
+      try {
+        if (!state.lastMatches.length) return tooltip.hide();
+        const { offset, x, y } = getCaretOffsetAndPoint();
+        if (offset < 0) return tooltip.hide();
+        const hit = state.lastMatches.find((m) => offset >= m.start && offset <= m.end);
+        if (!hit) return tooltip.hide();
+        tooltip.show(x, y, tooltipHtmlForEntities(hit.entities));
+      } catch {
+        tooltip.hide();
+      }
+    }
+
+    function render() {
+      if (!state.active) return;
+      ensure();
+      sync();
+
+      const text = getEditableText();
       const { normalized, map } = normalizeWithMap(text);
       const matches = matcher.findAll(normalized, map, text);
-      if (!matches.length) return false;
+      state.lastMatches = matches;
+
+      if (!matches.length) {
+        state.mirror.textContent = text;
+        tooltip.hide();
+        return;
+      }
 
       let html = "";
       let pos = 0;
@@ -845,43 +980,30 @@
         pos = m.end;
       }
       if (pos < text.length) html += escapeHtml(text.slice(pos));
-      el.innerHTML = html;
-      return true;
+      state.mirror.innerHTML = html;
+      updateTooltipFromCaret();
     }
 
-    const debouncedRender = debounce(() => {
-      if (!state.active) return;
-      tryWrap();
-    }, 160);
+    const debouncedRender = debounce(render, 140);
 
     function onInput() {
       debouncedRender();
     }
 
-    function onMouseOver(ev) {
-      const node = ev.target && ev.target.closest ? ev.target.closest("[data-poezd-hit]") : null;
-      if (!node) return;
-      const key = node.getAttribute("data-poezd-key") || "";
-      const ents = currentEntitiesByKey.get(key);
-      if (!ents || !ents.length) return;
-      tooltip.show(ev.clientX, ev.clientY, tooltipHtmlForEntities(ents));
-    }
-
-    function onMouseOut() {
+    function destroy() {
+      state.active = false;
+      el.removeEventListener("input", onInput);
+      el.removeEventListener("click", updateTooltipFromCaret);
+      el.removeEventListener("keyup", updateTooltipFromCaret);
+      el.removeEventListener("mouseup", updateTooltipFromCaret);
+      restore();
       tooltip.hide();
     }
 
     el.addEventListener("input", onInput);
-    el.addEventListener("mouseover", onMouseOver);
-    el.addEventListener("mouseout", onMouseOut);
-
-    function destroy() {
-      state.active = false;
-      el.removeEventListener("input", onInput);
-      el.removeEventListener("mouseover", onMouseOver);
-      el.removeEventListener("mouseout", onMouseOut);
-      tooltip.hide();
-    }
+    el.addEventListener("click", updateTooltipFromCaret);
+    el.addEventListener("keyup", updateTooltipFromCaret);
+    el.addEventListener("mouseup", updateTooltipFromCaret);
 
     return Object.freeze({ render: debouncedRender, destroy });
   }
