@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Поезд в огне
 // @namespace    poezd-v-ogne
-// @version      0.2.5
+// @version      0.2.6
 // @description  Подсвечивает имена/организации из локальной базы прямо в полях ввода. Полностью локально.
 // @match        *://*/*
 // @run-at       document-idle
@@ -54,6 +54,21 @@
 
   function uuid() {
     return "e" + Math.random().toString(16).slice(2) + Date.now().toString(16);
+  }
+
+  function splitAliasesCsv(s) {
+    const raw = String(s || "").split(",");
+    const out = [];
+    const seen = new Set();
+    for (const a of raw) {
+      const val = String(a || "").trim();
+      if (!val) continue;
+      const k = normalizeKey(val);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(val);
+    }
+    return out;
   }
 
   function safeJsonParse(text) {
@@ -397,6 +412,7 @@
     }
     return {
       id: String(e.id || uuid()),
+      source: String(e.source || "local"),
       category,
       primaryName,
       aliases: cleanAliases,
@@ -1054,7 +1070,40 @@
         <button data-act=\"importUnd\" style=\"cursor:pointer;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;border-radius:12px;padding:9px 12px\">Импорт нежелат. орг.</button>
       </div>
       <div data-act=\"status\" style=\"min-height:18px;opacity:.85;margin:10px 0 6px\"></div>
-      <div style=\"opacity:.85\">Остальная CRUD/импорт JSON можно добавить следующим шагом (если надо).</div>
+      <div style=\"display:grid;grid-template-columns: 1fr; gap:12px; margin-top:10px\">
+        <div style=\"border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);border-radius:14px;padding:12px\">
+          <div style=\"font-weight:700;margin-bottom:8px\">Добавить запись вручную</div>
+          <div style=\"display:grid;grid-template-columns: 220px 1fr; gap:10px; align-items:start\">
+            <label style=\"display:grid;gap:6px\">
+              <span style=\"opacity:.85\">Список</span>
+              <select data-act=\"cat\" style=\"height:36px;border-radius:10px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.25);color:#fff;padding:0 10px\">
+                <option value=\"foreign_agent\">Иноагенты</option>
+                <option value=\"extremist\">Экстремисты</option>
+                <option value=\"undesirable_org\">Нежелательные организации</option>
+              </select>
+            </label>
+            <label style=\"display:grid;gap:6px\">
+              <span style=\"opacity:.85\">Основное имя/название</span>
+              <input data-act=\"primary\" type=\"text\" placeholder=\"Например: Иван Алексеев\" style=\"height:36px;border-radius:10px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.25);color:#fff;padding:0 10px\" />
+            </label>
+            <label style=\"display:grid;gap:6px; grid-column: 1 / -1\">
+              <span style=\"opacity:.85\">Алиасы (через запятую)</span>
+              <textarea data-act=\"aliases\" rows=\"2\" placeholder=\"Например: Noize MC, Алексеев\" style=\"resize:vertical;min-height:64px;border-radius:10px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.25);color:#fff;padding:8px 10px\"></textarea>
+            </label>
+          </div>
+          <div style=\"display:flex;gap:10px;flex-wrap:wrap;margin-top:10px\">
+            <button data-act=\"addManual\" style=\"cursor:pointer;border:1px solid rgba(255,255,255,.20);background:rgba(52,199,89,.20);color:#fff;border-radius:12px;padding:9px 12px\">Добавить</button>
+            <button data-act=\"clearManual\" style=\"cursor:pointer;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;border-radius:12px;padding:9px 12px\">Очистить</button>
+          </div>
+        </div>
+        <div style=\"border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);border-radius:14px;padding:12px\">
+          <div style=\"display:flex;align-items:center;justify-content:space-between;gap:12px\">
+            <div style=\"font-weight:700\">Мои добавления</div>
+            <div data-act=\"manualCount\" style=\"opacity:.85\"></div>
+          </div>
+          <div data-act=\"manualList\" style=\"margin-top:10px; display:grid; gap:10px\"></div>
+        </div>
+      </div>
     `;
 
     overlay.appendChild(panel);
@@ -1062,9 +1111,95 @@
 
     const statusEl = panel.querySelector('[data-act="status"]');
     const enabledEl = panel.querySelector('[data-act="enabled"]');
+    const catEl = panel.querySelector('[data-act="cat"]');
+    const primaryEl = panel.querySelector('[data-act="primary"]');
+    const aliasesEl = panel.querySelector('[data-act="aliases"]');
+    const manualCountEl = panel.querySelector('[data-act="manualCount"]');
+    const manualListEl = panel.querySelector('[data-act="manualList"]');
 
     function setStatus(msg) {
       statusEl.textContent = msg || "";
+    }
+
+    function isManualEntity(e) {
+      return e && e.source === "manual";
+    }
+
+    async function renderManualList() {
+      const all = (await getEntities()).map(sanitizeEntity).filter(Boolean);
+      const manual = all.filter(isManualEntity);
+      manualCountEl.textContent = `Записей: ${manual.length}`;
+      if (!manual.length) {
+        manualListEl.innerHTML = `<div style="opacity:.85">Пока пусто. Добавьте первую запись выше.</div>`;
+        return;
+      }
+      manualListEl.innerHTML = manual
+        .slice()
+        .reverse()
+        .slice(0, 50)
+        .map((e) => {
+          const aliasesPreview = (e.aliases || []).slice(0, 6).join(", ");
+          const more = (e.aliases || []).length > 6 ? ` (+${(e.aliases || []).length - 6})` : "";
+          return `
+            <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);border-radius:12px;padding:10px">
+              <div style="min-width:0">
+                <div style="font-weight:700">${escapeHtml(e.primaryName)}</div>
+                <div style="opacity:.85;margin-top:2px">${escapeHtml(CATEGORY_LABELS_RU[e.category] || e.category)}</div>
+                ${aliasesPreview ? `<div style="opacity:.85;margin-top:6px;font-size:12px">Алиасы: ${escapeHtml(aliasesPreview)}${escapeHtml(more)}</div>` : ""}
+              </div>
+              <button data-act="delManual" data-id="${escapeHtml(e.id)}" style="cursor:pointer;border:1px solid rgba(255,255,255,.18);background:rgba(255,59,48,.18);color:#fff;border-radius:12px;padding:8px 10px;flex:0 0 auto">Удалить</button>
+            </div>
+          `;
+        })
+        .join("");
+      if (manual.length > 50) {
+        manualListEl.insertAdjacentHTML(
+          "beforeend",
+          `<div style="opacity:.75;font-size:12px">Показаны последние 50. (Всего: ${manual.length})</div>`
+        );
+      }
+    }
+
+    async function addManualEntity() {
+      const category = String(catEl.value || "").trim();
+      const primaryName = String(primaryEl.value || "").trim();
+      const aliases = splitAliasesCsv(aliasesEl.value || "");
+      if (!CATEGORY_LABELS_RU[category]) return setStatus("Выберите корректный список.");
+      if (!primaryName) return setStatus("Введите основное имя/название.");
+
+      const current = (await getEntities()).map(sanitizeEntity).filter(Boolean);
+      const ent = sanitizeEntity({
+        id: uuid(),
+        source: "manual",
+        category,
+        primaryName,
+        aliases,
+        notes: ""
+      });
+      if (!ent) return setStatus("Не удалось добавить запись (проверьте поля).");
+
+      await setEntities(current.concat([ent]));
+      scheduleRebuildMatcher();
+      setStatus(`Добавлено: ${CATEGORY_LABELS_RU[category]} — ${primaryName}`);
+      primaryEl.value = "";
+      aliasesEl.value = "";
+      await renderManualList();
+    }
+
+    function clearManualForm() {
+      primaryEl.value = "";
+      aliasesEl.value = "";
+      primaryEl.focus();
+    }
+
+    async function deleteManualEntity(id) {
+      const cur = (await getEntities()).map(sanitizeEntity).filter(Boolean);
+      const next = cur.filter((e) => !(e && e.id === id && isManualEntity(e)));
+      if (next.length === cur.length) return;
+      await setEntities(next);
+      scheduleRebuildMatcher();
+      setStatus("Удалено.");
+      await renderManualList();
     }
 
     async function importBundled(kind) {
@@ -1094,6 +1229,9 @@
       if (act === "importIno") importBundled("ino");
       if (act === "importExt") importBundled("ext");
       if (act === "importUnd") importBundled("und");
+      if (act === "addManual") addManualEntity();
+      if (act === "clearManual") clearManualForm();
+      if (act === "delManual") deleteManualEntity(btn.getAttribute("data-id") || "");
     });
 
     enabledEl.addEventListener("change", async () => {
@@ -1105,6 +1243,7 @@
     async function init() {
       enabledEl.checked = await getEnabled();
       setStatus("Откройте поле ввода на странице и начните печатать.");
+      await renderManualList();
     }
 
     return Object.freeze({
